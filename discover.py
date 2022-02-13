@@ -3,20 +3,27 @@ from bleak import BleakScanner
 import sys
 from manufacturers import MANUFACTURERS
 from enum import Enum
+from datetime import datetime
+from datetime import date
+import calendar
 
 # usage:
-# python3 discover.py [search time] [address]
+# python3 discover.py [logfilename]
 # 
-# This script discovers and prints all nearby Bluetooth devices.
+# This script discovers and prints all nearby Bluetooth devices to a logfile.
+# If no logfile is specified, it defaults to bluetooth.log.
+# Author: Tim Dibert (dubbltninja)
 
 devices_found = 0
 addr_list = []
 search_addr = None
-print_string_append = ""
+delim = " ; " 
+log = None
 
 # Label things true or false depending on what information you want to see:
 class Display_Attributes(Enum):
-    DEVICE_NUM = True
+    TIME = True
+    MILITARY_TIME = False
     NAME = True
     ADDRESS = True
     METADATA = False # a lot of redundant information
@@ -24,63 +31,41 @@ class Display_Attributes(Enum):
     INTERPRET_RSSI = True # - displays connection strength
     UUIDS = False
     ADVERTISEMENT_DATA = False
+    PRETTY_PRINT = True
 
 class Pad_Lengths(Enum):
-    DEVICE_NUM = 4
+    TIME = 26
     NAME = 23
     RSSI = 6
-    INTERPRET_RSSI = 16
+    INTERPRET_RSSI = 20
 
 def pad(string, pad_length):
     padded_string = string
-    # handle strings that are a bit too long
-    # also, yes technically the line below can cause collisions with other pad lengths if there were more
-    # but we only want to have the IF continue if we are dealing with a name
-    if len(padded_string) > pad_length and pad_length == Pad_Lengths.NAME.value:
-        str1 = padded_string[:pad_length - 2] + "- "
-        str2 = ""
-        dev_pad = 0
-        # handle extra padding in case of device number being printed
-        if Display_Attributes.DEVICE_NUM.value == True:
-            dev_pad = Pad_Lengths.DEVICE_NUM.value
-            str2 += str(" " * dev_pad)
-        str2 += padded_string[pad_length - 2:]
-        while len(str2) < (pad_length + dev_pad) :
-            str2 += " "
-        padded_string = str1
-        # extra name line should be printed on separate line
-        global print_string_append
-        print_string_append = "\n" + str2
-    else:
+    if Display_Attributes.PRETTY_PRINT.value == True:
         while len(padded_string) < pad_length :
             padded_string += " "
-    return padded_string
+    global delim
+    return padded_string + delim
 
-def print_header():
-    head = "\u001b[7m"
-    if Display_Attributes.DEVICE_NUM.value == True:
-        head += pad("#", Pad_Lengths.DEVICE_NUM.value)
-    if Display_Attributes.NAME.value == True:
-        head += pad("Name", Pad_Lengths.NAME.value)
-    if Display_Attributes.ADDRESS.value == True:
-        head += pad("Address", 19)
-    if Display_Attributes.INTERPRET_RSSI.value == True:
-        head += pad("Signal Strength", Pad_Lengths.INTERPRET_RSSI.value)
-    elif Display_Attributes.RSSI.value == True:
-        head += pad("RSSI:", Pad_Lengths.RSSI.value)
-    if Display_Attributes.METADATA.value == True:
-        head += "Metadata:" + (" " * 20)
-    if Display_Attributes.UUIDS.value == True:
-        head += "UUID(s):" + (" " * 20)
-    if Display_Attributes.ADVERTISEMENT_DATA.value == True:
-        head += "Advertisement Data:" + (" " * 20)
-    print(head + "\u001b[0m")
+def get_date() -> str:
+    # day of week, date, time (12 hour), AM/PM
+    day_of_week = calendar.day_name[date.today().weekday()]
+    date_time = ""
+    am_pm = ""
+    if Display_Attributes.MILITARY_TIME.value == True:
+        date_time = str(datetime.now())[:19]
+    else:
+        date_time = str(datetime.now().strftime('%Y/%m/%d %I:%M:%S'))
+        if int(str(datetime.now())[11:13]) < 12:
+            am_pm = " AM"
+        else:
+            am_pm = " PM"
+    return day_of_week + " " + date_time + am_pm
 
 def print_device_data(device, advertisement_data):
     info = ""
-    global devices_found
-    if Display_Attributes.DEVICE_NUM.value == True:
-        info += pad(str(devices_found), Pad_Lengths.DEVICE_NUM.value)
+    if Display_Attributes.TIME.value == True:
+        info += pad(get_date(), Pad_Lengths.TIME.value)
     if Display_Attributes.NAME.value == True:
         #if no name, print manufacturer name
         if device.name == None or device.name[:2] == device.address[:2]:
@@ -89,28 +74,25 @@ def print_device_data(device, advertisement_data):
         else:
             info += pad(device.name, Pad_Lengths.NAME.value)
     if Display_Attributes.ADDRESS.value == True:
-        info += device.address + "  "
+        # explicitly append delimiter since we're not calling pad()
+        info += device.address + delim
     if Display_Attributes.RSSI.value == True:
         info += str(device.rssi) + " "
         if Display_Attributes.INTERPRET_RSSI.value == True:
             if int(device.rssi) > -50:
-                info += pad("\u001b[32mStrong\u001b[0m", Pad_Lengths.INTERPRET_RSSI.value - 3)
+                info += pad("Strong", Pad_Lengths.INTERPRET_RSSI.value)
             elif int(device.rssi) > -70:
-                info += pad("\u001b[33mModerate\u001b[0m", Pad_Lengths.INTERPRET_RSSI.value - 3)
+                info += pad("Moderate", Pad_Lengths.INTERPRET_RSSI.value)
             elif int(device.rssi) < -69:
-                info += pad("\u001b[31mWeak\u001b[0m", Pad_Lengths.INTERPRET_RSSI.value - 3)
+                info += pad("Weak", Pad_Lengths.INTERPRET_RSSI.value)
     if Display_Attributes.METADATA.value == True:
         info += str(device.metadata) + "  "
     if Display_Attributes.UUIDS.value == True:
         info += str(device.metadata["uuids"]) + "  "
     if Display_Attributes.ADVERTISEMENT_DATA.value == True:
         info += str(advertisement_data)
-    # print a new header every 30 lines
-    if devices_found % 30 == 0:
-        print_header()
-    global print_string_append
-    print(info + print_string_append)
-    print_string_append = ""
+    global log
+    log.write(info + "\n")
 
 # I pretty much just stole this method from bleak:
 # https://bleak.readthedocs.io/en/latest/_modules/bleak/backends/device.html
@@ -140,9 +122,9 @@ def detection_callback(device, advertisement_data):
             print_device_data(device, advertisement_data)
     elif device.address == search_addr:
         # if we found the device we're looking for
-        print("Search Device Found!")
+        log.write("Search Device Found!" + "\n")
         print_device_data(device, advertisement_data)
-        print(advertisement_data)
+        log.write(advertisement_data + "\n")
         # since we found what we're looking for, exit
         sys.exit(0)
     else:
@@ -151,34 +133,24 @@ def detection_callback(device, advertisement_data):
         if device.address not in addr_list:
             addr_list.append(device.address)
             devices_found += 1
-            print("Found a device (" + str(devices_found) + ")")
+            log.write("Found a device (" + str(devices_found) + ")" + "\n")
 
-async def main(time = 60.0, addr = None):
+async def main():
     global devices_found
-    args = sys.argv[1:]
-    if len(args) == 0:
-        print("\u001b[1mSearching for all BT devices for", time, "seconds...\u001b[0m")
-    elif len(args) == 1:
-        time = float(args[0])
-        print("\u001b[1mSearching for all BT devices for", time, "seconds...\u001b[0m")
-    elif len(args) == 2:
-        time = float(args[0])
-        addr = str(args[1])
-        global search_addr
-        search_addr = addr
-        print("\u001b[1mSearching for address", search_addr, "for", time, "seconds...\u001b[0m")
-    print_header()
+    global log
+    scan_time = 10
+    log = open("bluetooth.log", "a")
+    log.write("Searching for all BT devices for " + str(scan_time) + " seconds..." + "\n")
     # Start the scanner and listen for callbacks
     scanner = BleakScanner()
     scanner.register_detection_callback(detection_callback)
     await scanner.start()
-    await asyncio.sleep(time)
+    await asyncio.sleep(float(scan_time))
     await scanner.stop()
-    print("\nTotal BT devices found:", str(devices_found))
+    # give scan summary
+    log.write(get_date() + " Total BT devices found: " + str(devices_found) + "\n")
+    log.close()
 
-# Run the program, catching any ^Cs
-try: 
-    asyncio.run(main())
-except KeyboardInterrupt:
-    print("\nTotal BT devices found:", str(devices_found), "(scanner terminated early)")
-    sys.exit(0)
+# Scan for two minutes
+asyncio.run(main())
+
